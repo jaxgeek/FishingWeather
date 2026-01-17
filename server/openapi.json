@@ -1,0 +1,40 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "FishingWeather API",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/weather": {
+      "get": {
+        "summary": "Hourly weather forecast",
+        "parameters": [
+          { "name": "lat", "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "lon", "in": "query", "required": true, "schema": { "type": "number" } }
+        ],
+        "responses": { "200": { "description": "forecast" } }
+      }
+    },
+    "/api/solunar": {
+      "get": {
+        "summary": "Solunar times for a date",
+        "parameters": [
+          { "name": "lat", "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "lon", "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "date", "in": "query", "required": false, "schema": { "type": "string", "format": "date" } }
+        ],
+        "responses": { "200": { "description": "solunar times" } }
+      }
+    },
+    "/api/tides": {
+      "get": {
+        "summary": "Tide predictions (best-effort)",
+        "parameters": [
+          { "name": "lat", "in": "query", "required": true, "schema": { "type": "number" } },
+          { "name": "lon", "in": "query", "required": true, "schema": { "type": "number" } }
+        ],
+        "responses": { "200": { "description": "tide data" } }
+      }
+    }
+  }
+}

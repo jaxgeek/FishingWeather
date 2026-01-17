@@ -1,0 +1,25 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-backend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # Match the project's current target framework (adjust if you upgrade projects)
+          dotnet-version: '3.1.x'
+      - name: Restore and build
+        run: |
+          dotnet restore bff/SupplementApp.Bff.csproj
+          dotnet build bff/SupplementApp.Bff.csproj --configuration Release
+      - name: Run backend tests
+        run: |
+          dotnet test bff/tests/SupplementApp.Bff.Tests.csproj --logger:trx

@@ -1,0 +1,62 @@
+name: CI / Test / Deploy
+
+on:
+  pull_request:
+    branches: [ master ]
+  push:
+    branches: [ master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install & test bff-node
+        working-directory: ./bff-node
+        run: |
+          npm ci
+          npm test
+
+      - name: Install & test frontend
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm test
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+
+      - name: Deploy frontend to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN not set; skipping frontend deploy";
+          else
+            cd frontend
+            npx vercel --prod --token "$VERCEL_TOKEN" --confirm
+          fi
+
+      - name: Deploy bff-node to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "VERCEL_TOKEN not set; skipping bff-node deploy";
+          else
+            cd bff-node
+            npx vercel --prod --token "$VERCEL_TOKEN" --confirm
+          fi
