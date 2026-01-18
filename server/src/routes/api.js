@@ -227,16 +227,16 @@ router.get('/tides', async (req, res) => {
   }
 });
 
-// GET /api/stations?region=ne-fl
-// Returns a list of NOAA stations filtered to North East Florida (best-effort bounding box)
+// GET /api/stations?region=big-bend
+// Returns a list of NOAA stations filtered to the Big Bend region of Florida (best-effort bounding box)
 let stationsCache = { ts: 0, stations: null };
 router.get('/stations', async (req, res) => {
   try {
     const { region } = req.query;
 
-    // For now we only support closed region key `ne-fl` (North East Florida)
-    // Bounding box roughly covers: lat 29.0 -> 31.5, lon -82.5 -> -80.0
-    const bbox = { minLat: 29.0, maxLat: 31.5, minLon: -82.5, maxLon: -80.0 };
+    // For now we only support closed region key `big-bend` (Florida Big Bend)
+    // Bounding box roughly covers the Big Bend / Nature Coast: lat 29.0 -> 31.0, lon -85.5 -> -82.0
+    const bbox = { minLat: 29.0, maxLat: 31.0, minLon: -85.5, maxLon: -82.0 };
 
     // Cache stations for 24h to avoid repeated large downloads
     const now = Date.now();
@@ -257,7 +257,169 @@ router.get('/stations', async (req, res) => {
 
     // Map to small footprint
     const payload = filtered.map((st) => ({ id: st.id, name: st.name, lat: st.lat, lon: st.lng }));
-    return res.json({ provider: 'noaa-mdapi', region: region || 'ne-fl', count: payload.length, stations: payload });
+    return res.json({ provider: 'noaa-mdapi', region: region || 'big-bend', count: payload.length, stations: payload });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server_error', details: err.message });
+  }
+});
+
+// GET /api/recommendations?lat={lat}&lon={lon}
+// Returns simple, high-level bait recommendations based on weather, tides, and solunar trends.
+router.get('/recommendations', async (req, res) => {
+  try {
+    const { lat, lon } = req.query;
+    if (!lat || !lon) return res.status(400).json({ error: 'lat and lon required' });
+
+    // build a base URL that points back at this server so we can reuse our existing endpoints
+    const base = `${req.protocol}://${req.get('host')}`;
+
+    // fetch current data from our own endpoints (best-effort aggregation)
+    const [weatherResp, solunarResp, tidesResp] = await Promise.all([
+      fetch(`${base}/api/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`).then(r => r.json()).catch(() => null),
+      fetch(`${base}/api/solunar?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`).then(r => r.json()).catch(() => null),
+      fetch(`${base}/api/tides?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`).then(r => r.json()).catch(() => null),
+    ]);
+
+    const now = new Date();
+
+    // helper: check if now is inside an iso window {start,end}
+    const isNowInIsoWindow = (w) => {
+      if (!w || !w.start || !w.end) return false;
+      const s = new Date(w.start);
+      const e = new Date(w.end);
+      return now >= s && now <= e;
+    };
+
+    // solunar summary
+    const solunarSummary = { inMajor: false, inMinor: false };
+    try {
+      if (solunarResp) {
+        if (Array.isArray(solunarResp.major)) {
+          solunarSummary.inMajor = solunarResp.major.some(m => isNowInIsoWindow(m.window));
+        }
+        if (Array.isArray(solunarResp.minor)) {
+          solunarSummary.inMinor = solunarResp.minor.some(m => isNowInIsoWindow(m.window));
+        }
+      }
+    } catch (e) {
+      // ignore solunar parse errors
+    }
+
+    // weather summary: pick nearest hour's values
+    let weatherSummary = { temp_c: null, temp_f: null, precip_mm: null, wind_kmh: null };
+    try {
+      if (weatherResp && weatherResp.data && weatherResp.data.hourly) {
+        const times = weatherResp.data.hourly.time || [];
+        const temps = weatherResp.data.hourly.temperature_2m || [];
+        const prec = weatherResp.data.hourly.precipitation || [];
+        const ws = weatherResp.data.hourly.windspeed_10m || [];
+
+        // find nearest index to now (by hour)
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+        for (let i = 0; i < times.length; i++) {
+          const d = new Date(times[i]);
+          const diff = Math.abs(d - now);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = i;
+          }
+        }
+        const tc = temps[bestIdx];
+        weatherSummary.temp_c = typeof tc === 'number' ? tc : null;
+        weatherSummary.temp_f = (typeof tc === 'number') ? +(tc * 9 / 5 + 32).toFixed(1) : null;
+        weatherSummary.precip_mm = prec[bestIdx] ?? null;
+        weatherSummary.wind_kmh = ws[bestIdx] ?? null;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // tide summary: determine rising/falling by comparing nearest points
+    let tideSummary = { trend: 'unknown', nearestHeight: null };
+    try {
+      if (tidesResp && Array.isArray(tidesResp.tides) && tidesResp.tides.length > 1) {
+        const arr = tidesResp.tides.map(t => ({ time: new Date(t.time), height: Number(t.height_m || t.height || t.v || 0) }));
+        // find nearest index
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+        for (let i = 0; i < arr.length; i++) {
+          const diff = Math.abs(arr[i].time - now);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = i;
+          }
+        }
+        tideSummary.nearestHeight = arr[bestIdx].height;
+        // compare to next and previous to see trend
+        const prev = arr[Math.max(0, bestIdx - 1)];
+        const next = arr[Math.min(arr.length - 1, bestIdx + 1)];
+        if (next && prev) {
+          const slope = ((next.height - prev.height) / ((next.time - prev.time) / 1000 / 3600)); // m per hour
+          tideSummary.trend = slope > 0 ? 'rising' : (slope < 0 ? 'falling' : 'stable');
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // simple rules engine: build recommendations list
+    const recommendations = [];
+
+    // Rule: Major solunar window -> promote live/cut baits
+    if (solunarSummary.inMajor) {
+      recommendations.push({ bait: 'Live/Cut Bait', reason: 'Currently inside major solunar feeding window (transit/antitransit)', confidence: 'high' });
+    }
+
+    // Rule: Minor window -> increase likelihood of active feeding
+    if (solunarSummary.inMinor) {
+      recommendations.push({ bait: 'Shrimp / Small live baits', reason: 'Minor solunar period (moonrise/moonset) — increased activity', confidence: 'medium' });
+    }
+
+    // Rule: tide trend influences bait type
+    if (tideSummary.trend === 'rising') {
+      recommendations.push({ bait: 'Soft plastics / Shrimp', reason: 'Incoming tide / rising — bait moves with current, soft plastics and shrimp often work well', confidence: 'medium' });
+    } else if (tideSummary.trend === 'falling') {
+      recommendations.push({ bait: 'Jigs / Bottom rigs', reason: 'Falling tide — fish often concentrate in channels and holes; try bottom presentations', confidence: 'medium' });
+
+    }
+
+    // Rule: temperature bands
+    if (weatherSummary.temp_c != null) {
+      const t = weatherSummary.temp_c;
+      if (t < 10) { // <50F
+        recommendations.push({ bait: 'Slow jigs / Spoons', reason: `Cold water (${weatherSummary.temp_f}°F) — use slow, weighty presentations`, confidence: 'medium' });
+      } else if (t >= 10 && t < 21) { // 50-70F
+        recommendations.push({ bait: 'Soft plastics / Live bait', reason: `Moderate water (${weatherSummary.temp_f}°F) — soft plastics and live bait effective`, confidence: 'high' });
+      } else { // >70F
+        recommendations.push({ bait: 'Topwater / Surface plugs', reason: `Warm water (${weatherSummary.temp_f}°F) — surface action can be productive`, confidence: 'medium' });
+      }
+    }
+
+    // Rule: wind > 20 km/h -> heavier and larger baits
+    if (weatherSummary.wind_kmh != null && weatherSummary.wind_kmh > 20) {
+      recommendations.push({ bait: 'Heavier jigs / spoons', reason: `Windy conditions (${weatherSummary.wind_kmh} km/h) — use heavier, castable baits`, confidence: 'medium' });
+    }
+
+    // Rule: precipitation discourages topwater
+    if (weatherSummary.precip_mm != null && weatherSummary.precip_mm > 1) {
+      recommendations.push({ bait: 'Subsurface baits (soft plastics, jigs)', reason: `Rainy conditions — fish may move subsurface`, confidence: 'low' });
+    }
+
+    // de-duplicate by bait name keeping highest confidence (simple approach)
+    const byBait = {};
+    for (const r of recommendations) {
+      const key = r.bait;
+      const rank = r.confidence === 'high' ? 3 : (r.confidence === 'medium' ? 2 : 1);
+      if (!byBait[key] || rank > byBait[key].rank) {
+        byBait[key] = { bait: r.bait, reason: r.reason, confidence: r.confidence, rank };
+      }
+    }
+
+    const final = Object.values(byBait).sort((a, b) => b.rank - a.rank).map(x => ({ bait: x.bait, reason: x.reason, confidence: x.confidence }));
+
+    return res.json({ provider: 'rule-based', recommendations: final, weather: weatherSummary, tides: tideSummary, solunar: solunarSummary });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'server_error', details: err.message });

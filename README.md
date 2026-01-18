@@ -43,9 +43,15 @@ API endpoints
 - `GET /api/weather?lat={lat}&lon={lon}` — hourly weather forecast (Open-Meteo)
 - `GET /api/solunar?lat={lat}&lon={lon}&date={YYYY-MM-DD}` — solunar times for date
 - `GET /api/tides?lat={lat}&lon={lon}` — tide predictions (best-effort using Open-Meteo/marine)
+ - `GET /api/recommendations?lat={lat}&lon={lon}` — simple, rule-based bait recommendations derived from weather, tides, and solunar trends
 
 Notes on charts
 - The client uses `chart.js` + `react-chartjs-2` to render hourly temperature and tide height charts. Install client deps with `npm install` in `client/` before running the Vite dev server.
+
+Bait recommendations (initial pass)
+- The server exposes `GET /api/recommendations?lat={lat}&lon={lon}` which returns a small, rule-based set of bait suggestions and short reasons (e.g., "Soft plastics / Shrimp — Incoming tide", "Topwater — warm water").
+- This is intentionally high-level and heuristic: it combines a nearest-hour weather snapshot, tide trend (rising/falling), and whether the current time is inside a solunar major or minor window.
+- Future improvements: refine by target species, body of water, localized tide behavior, learning-based scoring, and additional environmental inputs (salinity, water clarity).
 
 Switching to C# BFF
 - Server is intentionally small. If you prefer a C# BFF (ASP.NET Core), keep the same API contract in `server/openapi.json` and implement controllers accordingly.
